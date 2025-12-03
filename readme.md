@@ -12,11 +12,6 @@ bash <(curl -Ls https://raw.githubusercontent.com/dev-ir/PasarGuard-Assistant/re
 A fast, user-friendly command-line menu for monitoring traffic usage, checking expiring users, and automating Telegram reports — all with a polished interface inspired by professional server dashboards.
 It auto-configures itself on first run and provides reliable database access without requiring manual setup.
 
-## 🪚 Preview
-<p align="left" style='display:none'>
-    <img width="100%" src="https://github.com/user-attachments/assets/f61b1e45-4921-46e7-ab06-ff876794ccce" alt="Image">
-</p>
-
 ## 🖥️ Supported Operating Systems
 - **Ubuntu 22+** (Recommended for best compatibility)
 
