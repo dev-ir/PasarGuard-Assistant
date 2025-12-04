@@ -21,6 +21,8 @@ TELEGRAM_TOKEN = None
 TELEGRAM_CHAT_ID = None
 TELEGRAM_INTERVAL_H = None
 
+TELEGRAM_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_config.env")
+
 
 class C:
     HEADER = "\033[95m"
@@ -423,6 +425,51 @@ def send_telegram_message(token, chat_id, text):
     return True
 
 
+def load_telegram_config():
+    global TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_INTERVAL_H
+    if not os.path.exists(TELEGRAM_CONFIG_FILE):
+        try:
+            with open(TELEGRAM_CONFIG_FILE, "w", encoding="utf-8") as f:
+                f.write("# Telegram config\n")
+        except:
+            return
+        return
+    try:
+        with open(TELEGRAM_CONFIG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip().upper()
+                v = v.strip()
+                if k == "TOKEN":
+                    TELEGRAM_TOKEN = v
+                elif k == "CHAT_ID":
+                    TELEGRAM_CHAT_ID = v
+                elif k == "INTERVAL_H":
+                    try:
+                        TELEGRAM_INTERVAL_H = float(v)
+                    except:
+                        TELEGRAM_INTERVAL_H = None
+    except:
+        pass
+
+
+def save_telegram_config():
+    global TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_INTERVAL_H
+    try:
+        with open(TELEGRAM_CONFIG_FILE, "w", encoding="utf-8") as f:
+            if TELEGRAM_TOKEN:
+                f.write(f"TOKEN={TELEGRAM_TOKEN}\n")
+            if TELEGRAM_CHAT_ID:
+                f.write(f"CHAT_ID={TELEGRAM_CHAT_ID}\n")
+            if TELEGRAM_INTERVAL_H is not None:
+                f.write(f"INTERVAL_H={TELEGRAM_INTERVAL_H}\n")
+    except Exception as e:
+        print(f"{C.WARNING}Failed to save Telegram config: {e}{C.ENDC}")
+
+
 def telegram_send_once(cfg):
     global TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -497,6 +544,8 @@ def configure_telegram():
         except:
             print(f"{C.FAIL}Invalid interval value.{C.ENDC}")
 
+    save_telegram_config()
+
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID and TELEGRAM_INTERVAL_H is not None:
         print(f"{C.OKGREEN}Telegram configuration saved.{C.ENDC}")
     else:
@@ -528,6 +577,7 @@ def telegram_menu(cfg):
 
 def menu():
     cfg = get_db_config()
+    load_telegram_config()
 
     while True:
         clear_screen()
@@ -535,7 +585,7 @@ def menu():
         print(f"{C.OKCYAN}1){C.ENDC} Low remaining volume (< {THRESHOLD_GIB} GiB)")
         print(f"{C.OKCYAN}2){C.ENDC} Users expiring in next 48 hours")
         print(f"{C.OKCYAN}3){C.ENDC} Users inactive for more than 3 days")
-        #print(f"{C.OKCYAN}4){C.ENDC} Telegram tools")
+        print(f"{C.OKCYAN}4){C.ENDC} Telegram tools")
         print(f"{C.OKCYAN}0){C.ENDC} Exit\n")
 
         c = input("Select: ").strip()
