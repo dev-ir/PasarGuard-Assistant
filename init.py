@@ -21,6 +21,7 @@ TELEGRAM_TOKEN = None
 TELEGRAM_CHAT_ID = None
 TELEGRAM_INTERVAL_H = None
 
+
 class C:
     HEADER = "\033[95m"
     OKBLUE = "\033[94m"
@@ -67,7 +68,7 @@ def parse_mysql_url(url):
         "pwd": m.group("pwd"),
         "host": m.group("host"),
         "port": int(m.group("port")) if m.group("port") else None,
-        "db": m.group("db")
+        "db": m.group("db"),
     }
 
 
@@ -134,77 +135,80 @@ def with_db(cfg, connector_fn, cli_fn):
             sys.exit(1)
 
 
-def get_low_volume_rows(cfg):
-    def connector_part(cfg_inner):
-        import mysql.connector
-        conn_args = {
-            "host": cfg_inner["host"],
-            "user": cfg_inner["user"],
-            "password": cfg_inner["pwd"],
-            "database": cfg_inner["db"]
-        }
-        if cfg_inner.get("port"):
-            conn_args["port"] = cfg_inner["port"]
+def mysql_connect(cfg_inner):
+    import mysql.connector
 
-        cnx = mysql.connector.connect(**conn_args)
+    conn_args = {
+        "host": cfg_inner["host"],
+        "user": cfg_inner["user"],
+        "password": cfg_inner["pwd"],
+        "database": cfg_inner["db"],
+    }
+    if cfg_inner.get("port"):
+        conn_args["port"] = cfg_inner["port"]
+    return mysql.connector.connect(**conn_args)
+
+
+def mysql_cli(cfg_inner, sql):
+    cmd = ["mysql", "-N", "-s", "-u", cfg_inner["user"], "-h", cfg_inner["host"]]
+    if cfg_inner.get("port"):
+        cmd += ["-P", str(cfg_inner["port"])]
+    cmd += [cfg_inner["db"], "-e", sql]
+
+    env = os.environ.copy()
+    env["MYSQL_PWD"] = cfg_inner["pwd"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr)
+    return proc.stdout.strip().splitlines()
+
+
+def get_low_volume_rows(cfg):
+    def process(username, dl_raw, used_raw):
+        if dl_raw in (None, "", 0, "0"):
+            return str(username), "∞"
+        try:
+            dl_n = int(dl_raw)
+        except:
+            return None
+        try:
+            used_n = int(used_raw)
+        except:
+            used_n = 0
+        remaining = max(0, dl_n - used_n)
+        if remaining < THRESHOLD_GIB * GIB:
+            return str(username), fmt_gb(remaining)
+        return None
+
+    def connector_part(cfg_inner):
+        cnx = mysql_connect(cfg_inner)
         cur = cnx.cursor(dictionary=True)
         cur.execute("SELECT username, data_limit, used_traffic FROM users")
-
         rows_out = []
         for r in cur:
-            username = r.get("username") or ""
-            dl = r.get("data_limit") or 0
-            used = r.get("used_traffic") or 0
-            try:
-                dl_n = int(dl)
-            except:
-                dl_n = 0
-            try:
-                used_n = int(used)
-            except:
-                used_n = 0
-            remaining = max(0, dl_n - used_n)
-            if remaining < THRESHOLD_GIB * GIB:
-                rows_out.append((str(username), fmt_gb(remaining)))
-
+            res = process(r.get("username") or "", r.get("data_limit"), r.get("used_traffic") or 0)
+            if res:
+                rows_out.append(res)
         cur.close()
         cnx.close()
         return rows_out
 
     def cli_part(cfg_inner):
-        sql = "SELECT username, data_limit, used_traffic FROM users;"
-        cmd = ["mysql", "-N", "-s", "-u", cfg_inner["user"], "-h", cfg_inner["host"]]
-        if cfg_inner.get("port"):
-            cmd += ["-P", str(cfg_inner["port"])]
-        cmd += [cfg_inner["db"], "-e", sql]
-
-        env = os.environ.copy()
-        env["MYSQL_PWD"] = cfg_inner["pwd"]
-
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr)
-
+        lines = mysql_cli(cfg_inner, "SELECT username, data_limit, used_traffic FROM users;")
         rows_out = []
-        for line in proc.stdout.strip().splitlines():
+        for line in lines:
+            if not line:
+                continue
             parts = line.split("\t")
             if not parts:
                 continue
             username = parts[0]
-            dl = parts[1] if len(parts) > 1 else "0"
-            used = parts[2] if len(parts) > 2 else "0"
-            try:
-                dl_n = int(dl)
-            except:
-                dl_n = 0
-            try:
-                used_n = int(used)
-            except:
-                used_n = 0
-            remaining = max(0, dl_n - used_n)
-            if remaining < THRESHOLD_GIB * GIB:
-                rows_out.append((username, fmt_gb(remaining)))
-
+            dl_raw = parts[1] if len(parts) > 1 else ""
+            used_raw = parts[2] if len(parts) > 2 else "0"
+            res = process(username, dl_raw, used_raw)
+            if res:
+                rows_out.append(res)
         return rows_out
 
     return with_db(cfg, connector_part, cli_part)
@@ -217,6 +221,15 @@ def pretty_time_left(delta_seconds):
     d = s // 86400
     h = (s % 86400) // 3600
     return f"{d} days {h} hours"
+
+
+def pretty_time_since(delta_seconds):
+    if delta_seconds < 0:
+        return "in the future"
+    s = int(delta_seconds)
+    d = s // 86400
+    h = (s % 86400) // 3600
+    return f"{d} days {h} hours ago"
 
 
 def normalize_expire_value(val):
@@ -232,7 +245,7 @@ def normalize_expire_value(val):
     if re.fullmatch(r"\d+", s):
         n = int(s)
         if n > 10**12:
-            n = n // 1000
+            n //= 1000
         return datetime.fromtimestamp(n, tz=timezone.utc).replace(tzinfo=None)
 
     fmts = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"]
@@ -263,65 +276,102 @@ ROBUST_SELECT = f"SELECT username, expire FROM users WHERE {ROBUST_WHERE} ORDER 
 
 
 def get_expiring_rows(cfg):
-    def connector_part(cfg_inner):
-        import mysql.connector
-        conn_args = {
-            "host": cfg_inner["host"],
-            "user": cfg_inner["user"],
-            "password": cfg_inner["pwd"],
-            "database": cfg_inner["db"],
-        }
-        if cfg_inner.get("port"):
-            conn_args["port"] = cfg_inner["port"]
+    def process(username, exp_raw, now):
+        exp_dt = normalize_expire_value(exp_raw)
+        if exp_dt is None:
+            return None
+        delta = (exp_dt - now).total_seconds()
+        return str(username), pretty_time_left(delta)
 
-        cnx = mysql.connector.connect(**conn_args)
+    def connector_part(cfg_inner):
+        cnx = mysql_connect(cfg_inner)
         cur = cnx.cursor(dictionary=True)
         cur.execute(ROBUST_SELECT)
         now = datetime.utcnow()
-
         rows = []
         for r in cur:
-            username = r.get("username") or ""
-            exp_raw = r.get("expire")
-            exp_dt = normalize_expire_value(exp_raw)
-            if exp_dt is None:
-                continue
-            delta = (exp_dt - now).total_seconds()
-            rows.append((str(username), pretty_time_left(delta)))
-
+            res = process(r.get("username") or "", r.get("expire"), now)
+            if res:
+                rows.append(res)
         cur.close()
         cnx.close()
         return rows
 
     def cli_part(cfg_inner):
-        sql = ROBUST_SELECT
-        cmd = ["mysql", "-N", "-s", "-u", cfg_inner["user"], "-h", cfg_inner["host"]]
-        if cfg_inner.get("port"):
-            cmd += ["-P", str(cfg_inner["port"])]
-        cmd += [cfg_inner["db"], "-e", sql]
-
-        env = os.environ.copy()
-        env["MYSQL_PWD"] = cfg_inner["pwd"]
-
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr)
-
+        lines = mysql_cli(cfg_inner, ROBUST_SELECT)
         now = datetime.utcnow()
         rows = []
-
-        for line in proc.stdout.strip().splitlines():
+        for line in lines:
+            if not line:
+                continue
             parts = line.split("\t")
             if not parts:
                 continue
             username = parts[0]
             exp_raw = parts[1] if len(parts) > 1 else ""
-            exp_dt = normalize_expire_value(exp_raw)
-            if exp_dt is None:
-                continue
-            delta = (exp_dt - now).total_seconds()
-            rows.append((username, pretty_time_left(delta)))
+            res = process(username, exp_raw, now)
+            if res:
+                rows.append(res)
+        return rows
 
+    return with_db(cfg, connector_part, cli_part)
+
+
+def get_inactive_rows(cfg):
+    THREE_DAYS = 3 * 86400
+
+    def parse_online(val):
+        if val is None:
+            return None
+        if isinstance(val, datetime):
+            return val
+        s = str(val).strip()
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except:
+            return None
+
+    def process(username, online_raw, now):
+        online_dt = parse_online(online_raw)
+        if online_dt is None:
+            return None
+        delta = (now - online_dt).total_seconds()
+        if delta < THREE_DAYS:
+            return None
+        last_str = online_dt.strftime("%Y-%m-%d %H:%M:%S")
+        return str(username), f"{last_str} ({pretty_time_since(delta)})"
+
+    def connector_part(cfg_inner):
+        cnx = mysql_connect(cfg_inner)
+        cur = cnx.cursor(dictionary=True)
+        cur.execute("SELECT username, online_at FROM users WHERE online_at IS NOT NULL")
+        now = datetime.utcnow()
+        rows = []
+        for r in cur:
+            res = process(r.get("username") or "", r.get("online_at"), now)
+            if res:
+                rows.append(res)
+        cur.close()
+        cnx.close()
+        return rows
+
+    def cli_part(cfg_inner):
+        lines = mysql_cli(cfg_inner, "SELECT username, online_at FROM users WHERE online_at IS NOT NULL;")
+        now = datetime.utcnow()
+        rows = []
+        for line in lines:
+            if not line:
+                continue
+            parts = line.split("\t")
+            if not parts:
+                continue
+            username = parts[0]
+            online_raw = parts[1] if len(parts) > 1 else ""
+            res = process(username, online_raw, now)
+            if res:
+                rows.append(res)
         return rows
 
     return with_db(cfg, connector_part, cli_part)
@@ -330,6 +380,7 @@ def get_expiring_rows(cfg):
 def build_report_text(cfg):
     low_rows = get_low_volume_rows(cfg)
     exp_rows = get_expiring_rows(cfg)
+    inactive_rows = get_inactive_rows(cfg)
 
     parts = []
     parts.append("Low volume users (< {:.1f} GiB):".format(THRESHOLD_GIB))
@@ -345,6 +396,14 @@ def build_report_text(cfg):
         parts.append("  None")
     else:
         for i, (u, t) in enumerate(exp_rows, start=1):
+            parts.append(f"  {i}. {u} - {t}")
+
+    parts.append("")
+    parts.append("Users inactive for more than 3 days:")
+    if not inactive_rows:
+        parts.append("  None")
+    else:
+        for i, (u, t) in enumerate(inactive_rows, start=1):
             parts.append(f"  {i}. {u} - {t}")
 
     return "\n".join(parts)
@@ -475,7 +534,8 @@ def menu():
         print(f"{C.HEADER}{C.BOLD}=== Marzban/PasarGuard Tools ==={C.ENDC}\n")
         print(f"{C.OKCYAN}1){C.ENDC} Low remaining volume (< {THRESHOLD_GIB} GiB)")
         print(f"{C.OKCYAN}2){C.ENDC} Users expiring in next 48 hours")
-        # print(f"{C.OKCYAN}3){C.ENDC} Telegram tools")
+        print(f"{C.OKCYAN}3){C.ENDC} Users inactive for more than 3 days")
+        #print(f"{C.OKCYAN}4){C.ENDC} Telegram tools")
         print(f"{C.OKCYAN}0){C.ENDC} Exit\n")
 
         c = input("Select: ").strip()
@@ -489,6 +549,10 @@ def menu():
             rows = get_expiring_rows(cfg)
             print_user_table(rows, "Time Left", title="Expiring Users (48h)")
         elif c == "3":
+            clear_screen()
+            rows = get_inactive_rows(cfg)
+            print_user_table(rows, "Last Online", title="Inactive Users (> 3 days)")
+        elif c == "4":
             telegram_menu(cfg)
         elif c == "0":
             sys.exit(0)
