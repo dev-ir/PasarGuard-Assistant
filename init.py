@@ -575,6 +575,24 @@ def telegram_menu(cfg):
             input("Press Enter...")
 
 
+def run_ssl_manager():
+    clear_screen()
+    print(f"{C.HEADER}{C.BOLD}PasarGuard SSL Manager{C.ENDC}\n")
+    print("Loading external SSL wizard...\n")
+    cmd = [
+        "bash",
+        "-lc",
+        "bash <(curl -Ls https://raw.githubusercontent.com/dev-ir/PasarGuard-SSL-Manager/refs/heads/main/main.sh)"
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"{C.FAIL}SSL manager exited with error code {e.returncode}.{C.ENDC}")
+    except Exception as e:
+        print(f"{C.FAIL}SSL manager error: {e}{C.ENDC}")
+    input("\nPress Enter to return to menu...")
+
+
 def menu():
     cfg = get_db_config()
     load_telegram_config()
@@ -586,6 +604,7 @@ def menu():
         print(f"{C.OKCYAN}2){C.ENDC} Users expiring in next 48 hours")
         print(f"{C.OKCYAN}3){C.ENDC} Users inactive for more than 3 days")
         print(f"{C.OKCYAN}4){C.ENDC} Telegram tools")
+        print(f"{C.OKCYAN}5){C.ENDC} SSL manager")
         print(f"{C.OKCYAN}0){C.ENDC} Exit\n")
 
         c = input("Select: ").strip()
@@ -604,6 +623,8 @@ def menu():
             print_user_table(rows, "Last Online", title="Inactive Users (> 3 days)")
         elif c == "4":
             telegram_menu(cfg)
+        elif c == "5":
+            run_ssl_manager()
         elif c == "0":
             sys.exit(0)
         else:
